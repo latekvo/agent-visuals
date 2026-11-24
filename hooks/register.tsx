@@ -1,0 +1,187 @@
+import type { Register, RenderChildren } from 'claude-code'
+
+import { escapeMarkdown, type FlowItem, type Piece, replaceInlineMath, splitBlocks, splitDisplay } from './parse'
+import { texToUnicode } from './unicode'
+
+type Rendered = { png: string; cols: number; rows: number } | { tooTall: true } | { error: string }
+type Formula = { tex: string; display: boolean }
+
+const PROMPT = [
+  'This terminal draws LaTeX in your replies as images. Write a formula that stands alone as display math:',
+  '`$$` on its own line, the LaTeX, then `$$` on its own line. Write math inside a sentence as `$...$`.',
+  'Prefer LaTeX over ASCII or Unicode approximations of formulas, and keep math meant to render out of code spans.',
+].join(' ')
+
+// Claude Code's own reply bullet and inline-code color.
+const BULLET = '⏺'
+const CODE_COLOR = '#afd7ff'
+
+const cache = new Map<string, Rendered>()
+
+export const register: Register = on => {
+  on('prompt.compose', async ($, e, next) => {
+    const composed = await next(e)
+    if (!e.surfaces.includes('terminal')) return composed
+    return { sections: [...composed.sections, { id: 'agent-visuals:math', text: PROMPT, scope: 'session' }] }
+  })
+
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || e.props.isSummary) return next(e)
+    const segments = splitDisplay(e.props.text).map(s =>
+      s.kind === 'math' ? s : { ...s, blocks: splitBlocks(s.text) },
+    )
+    const formulas = segments.flatMap((s): Formula[] =>
+      s.kind === 'math'
+        ? [{ tex: s.tex, display: true }]
+        : s.blocks.flatMap(b =>
+            b.kind === 'flow'
+              ? b.items.flatMap(it => it.pieces.flatMap(p => (p.kind === 'math' ? [{ tex: p.tex, display: false }] : [])))
+              : [],
+          ),
+    )
+    const hasRawMath = segments.some(
+      s => s.kind === 'md' && s.blocks.some(b => b.kind === 'raw' && replaceInlineMath(b.text, () => '') !== b.text),
+    )
+    if (!formulas.length && !hasRawMath) return next(e)
+
+    // Assistant text sits two columns in from the reply bullet.
+    const width = Math.max(10, (e.viewport?.columns ?? 80) - 2)
+    const maxCols = Math.min(255, width - 2)
+    const key = (f: Formula) => `${f.display ? 'D' : 'I'}${maxCols}\0${f.tex}`
+    const missing = [...new Map(formulas.filter(f => !cache.has(key(f))).map(f => [key(f), f])).values()]
+    if (missing.length) {
+      // A streaming reply changes the text under a pending render, abandoning
+      // this dispatch; the redraw for the newer text renders again.
+      const run = await $.process
+        .run(['node', `${$.plugin.root}/renderer/dist/render.mjs`], {
+          stdin: JSON.stringify({ maxCols, items: missing }),
+          timeoutMs: 10_000,
+        })
+        .catch((err: unknown) => String(err))
+      if (next.signal.aborted) return next(e)
+      let results: Rendered[] = []
+      try {
+        if (typeof run === 'string') throw new Error(run)
+        if (run.exitCode !== 0) throw new Error(`exit ${run.exitCode}: ${run.stderr.slice(0, 500)}`)
+        results = (JSON.parse(run.stdout) as { results: Rendered[] }).results
+      } catch (err) {
+        // Failures are cached too, so a broken renderer isn't rerun on every redraw.
+        $.ui.log(`agent-visuals: renderer failed, showing formulas as text: ${String(err)}`)
+      }
+      missing.forEach((f, i) => cache.set(key(f), results[i] ?? { error: 'not rendered' }))
+      // Oldest first: Map iterates in insertion order.
+      for (const old of cache.keys()) {
+        if (cache.size <= 200) break
+        cache.delete(old)
+      }
+    }
+    const image = (f: Formula) => {
+      const r = cache.get(key(f))
+      return r && 'png' in r ? r : null
+    }
+
+    const { Box, Text, Image, Link } = $.ui.resolve(e)
+    let isFirst = e.props.isFirstOfReply
+    let n = 0
+    const gutter = (drawn: RenderChildren) => {
+      const wrapped = isFirst ? drawn : <Box key={`g${n++}`} paddingLeft={2}>{drawn}</Box>
+      isFirst = false
+      return wrapped
+    }
+
+    const word = (parts: Piece[], trailingSpace: boolean) => (
+      <Box key={`w${n++}`} flexDirection="row">
+        {parts.map(p => {
+          if (p.kind === 'math') {
+            const img = image({ tex: p.tex, display: false })
+            return img ? (
+              <Image key={`i${n++}`} source={{ png: img.png }} columns={img.cols} rows={1} alt={p.source} />
+            ) : (
+              <Text key={`t${n++}`}>{texToUnicode(p.tex)}</Text>
+            )
+          }
+          const style = {
+            ...(p.bold && { weight: 'bold' as const }),
+            ...(p.italic && { italic: true }),
+            ...(p.code && { color: CODE_COLOR }),
+          }
+          return p.href ? (
+            <Link key={`l${n++}`} href={p.href} label={p.text} />
+          ) : (
+            <Text key={`t${n++}`} {...style}>
+              {p.text}
+            </Text>
+          )
+        })}
+        {trailingSpace && <Text key={`s${n++}`}> </Text>}
+      </Box>
+    )
+
+    // Words are flex children so wrapping keeps each formula whole and in line.
+    const flowRow = (item: FlowItem, lead: string, cols: number) => {
+      const words: RenderChildren[] = []
+      let parts: Piece[] = []
+      for (const p of item.pieces) {
+        if (p.kind === 'math') {
+          parts.push(p)
+          continue
+        }
+        const chunks = p.text.split(/(\s+)/)
+        chunks.forEach((chunk, i) => {
+          if (i % 2 === 1) {
+            if (parts.length) words.push(word(parts, true))
+            parts = []
+          } else if (chunk) parts.push({ ...p, text: chunk })
+        })
+      }
+      if (parts.length) words.push(word(parts, false))
+      return (
+        <Box key={`r${n++}`} flexDirection="row">
+          <Text>{lead}</Text>
+          <Box flexDirection="row" flexWrap="wrap" width={cols - lead.length}>
+            {words}
+          </Box>
+        </Box>
+      )
+    }
+
+    const parts: RenderChildren[] = []
+    for (const s of segments) {
+      if (s.kind === 'math') {
+        const img = image({ tex: s.tex, display: true })
+        parts.push(
+          img ? (
+            gutter(
+              <Box key={`m${n++}`} marginTop={1}>
+                <Image source={{ png: img.png }} columns={img.cols} rows={img.rows} alt={s.tex} />
+              </Box>,
+            )
+          ) : (
+            gutter(await next({ ...e, props: { ...e.props, text: s.source, isFirstOfReply: isFirst } }))
+          ),
+        )
+        continue
+      }
+      for (const b of s.blocks) {
+        if (b.kind === 'raw') {
+          const text = replaceInlineMath(b.text, tex => escapeMarkdown(texToUnicode(tex)))
+          if (text.trim()) parts.push(gutter(await next({ ...e, props: { ...e.props, text, isFirstOfReply: isFirst } })))
+          continue
+        }
+        const bullet = isFirst
+        isFirst = false
+        parts.push(
+          <Box key={`f${n++}`} flexDirection="column" marginTop={1}>
+            {b.items.map((item, i) => (
+              <Box key={`b${n++}`} flexDirection="row">
+                <Box width={2}>{bullet && i === 0 && <Text color="text">{BULLET}</Text>}</Box>
+                {flowRow(item, item.prefix, width)}
+              </Box>
+            ))}
+          </Box>,
+        )
+      }
+    }
+    return <Box flexDirection="column">{parts}</Box>
+  })
+}

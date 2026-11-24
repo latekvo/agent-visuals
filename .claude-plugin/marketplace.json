@@ -1,0 +1,14 @@
+{
+  "name": "agent-visuals",
+  "description": "Math and diagrams drawn as images in agent replies",
+  "owner": {
+    "name": "latekvo",
+    "url": "https://github.com/latekvo"
+  },
+  "plugins": [
+    {
+      "name": "agent-visuals",
+      "source": "./"
+    }
+  ]
+}
