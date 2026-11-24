@@ -1,6 +1,6 @@
 {
   "name": "agent-visuals",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Draws LaTeX math in Claude Code replies as images on kitty-graphics terminals, and asks the model to write formulas as LaTeX",
   "author": { "name": "latekvo", "url": "https://github.com/latekvo" },
   "homepage": "https://github.com/latekvo/agent-visuals",

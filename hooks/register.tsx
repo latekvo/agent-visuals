@@ -80,13 +80,19 @@ export const register: Register = on => {
       return r && 'png' in r ? r : null
     }
 
-    const { Box, Text, Image, Link } = $.ui.resolve(e)
+    const { Box, Text, Image, Link, Markdown } = $.ui.resolve(e)
     let isFirst = e.props.isFirstOfReply
     let n = 0
-    const gutter = (drawn: RenderChildren) => {
-      const wrapped = isFirst ? drawn : <Box key={`g${n++}`} paddingLeft={2}>{drawn}</Box>
+    // Each block beside a two-column gutter, which holds the bullet opening a reply.
+    const block = (drawn: RenderChildren) => {
+      const bullet = isFirst
       isFirst = false
-      return wrapped
+      return (
+        <Box key={`k${n++}`} flexDirection="row" marginTop={1}>
+          <Box width={2}>{bullet && <Text color="text">{BULLET}</Text>}</Box>
+          {drawn}
+        </Box>
+      )
     }
 
     const word = (parts: Piece[], trailingSpace: boolean) => (
@@ -145,19 +151,19 @@ export const register: Register = on => {
       )
     }
 
+    const markdown = (text: string) => (
+      <Box width={width}>
+        <Markdown text={text} />
+      </Box>
+    )
+
     const parts: RenderChildren[] = []
     for (const s of segments) {
       if (s.kind === 'math') {
         const img = image({ tex: s.tex, display: true })
         parts.push(
-          img ? (
-            gutter(
-              <Box key={`m${n++}`} marginTop={1}>
-                <Image source={{ png: img.png }} columns={img.cols} rows={img.rows} alt={s.tex} />
-              </Box>,
-            )
-          ) : (
-            gutter(await next({ ...e, props: { ...e.props, text: s.source, isFirstOfReply: isFirst } }))
+          block(
+            img ? <Image source={{ png: img.png }} columns={img.cols} rows={img.rows} alt={s.tex} /> : markdown(s.source),
           ),
         )
         continue
@@ -165,23 +171,13 @@ export const register: Register = on => {
       for (const b of s.blocks) {
         if (b.kind === 'raw') {
           const text = replaceInlineMath(b.text, tex => escapeMarkdown(texToUnicode(tex)))
-          if (text.trim()) parts.push(gutter(await next({ ...e, props: { ...e.props, text, isFirstOfReply: isFirst } })))
+          if (text.trim()) parts.push(block(markdown(text)))
           continue
         }
-        const bullet = isFirst
-        isFirst = false
-        parts.push(
-          <Box key={`f${n++}`} flexDirection="column" marginTop={1}>
-            {b.items.map((item, i) => (
-              <Box key={`b${n++}`} flexDirection="row">
-                <Box width={2}>{bullet && i === 0 && <Text color="text">{BULLET}</Text>}</Box>
-                {flowRow(item, item.prefix, width)}
-              </Box>
-            ))}
-          </Box>,
-        )
+        parts.push(block(<Box flexDirection="column">{b.items.map(item => flowRow(item, item.prefix, width))}</Box>))
       }
     }
+    // Drawn whole here, without next(): a hook beneath expects a row once, not once per part.
     return <Box flexDirection="column">{parts}</Box>
   })
 }

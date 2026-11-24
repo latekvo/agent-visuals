@@ -28,6 +28,16 @@ function renderer(on: On, exitCode: number) {
   return calls
 }
 
+// What reaches the hooks beneath this plugin's.
+function engineTexts(on: On) {
+  const texts: string[] = []
+  on('ui.render', { component: 'AssistantMessage' }, (_, e, next) => {
+    texts.push(e.props.text)
+    return next(e)
+  })
+  return texts
+}
+
 const mount = ($: Engine, text: string) =>
   $.ui.mount({
     plugin: PLUGIN,
@@ -41,7 +51,7 @@ test('inline and display math draw as images, the paragraph with the reply bulle
   const calls = renderer(on, 0)
   const ui = await mount($, TEXT)
   expect(await ui.findAll({ type: 'Image' })).toHaveLength(2)
-  expect(await ui.find({ type: 'Text', text: '⏺' })).toBeDefined()
+  expect(await ui.findAll({ type: 'Text', text: '⏺' })).toHaveLength(1)
   expect(await ui.find({ type: 'Text', text: 'Roots' })).toBeDefined()
   expect(JSON.parse(calls[0]!).items).toEqual([
     { tex: 'ax^2', display: false },
@@ -59,6 +69,15 @@ test('a failed renderer draws inline math as Unicode text and is not rerun', asy
   await ui.unmount()
   await (await mount($, 'Fail $q^2$ case.')).unmount()
   expect(calls).toHaveLength(1)
+})
+
+test('a reply is drawn whole here, its markdown parts never handed to the hooks beneath', async ($, on) => {
+  renderer(on, 0)
+  const texts = engineTexts(on)
+  const ui = await mount($, `${TEXT}\n\n# Heading\n\nLast.`)
+  expect(await ui.find({ type: 'Markdown', text: /^\s*Done\.\n\n# Heading\n\nLast\.$/ })).toBeDefined()
+  expect(texts).toEqual([])
+  await ui.unmount()
 })
 
 const COMPOSE = { model: 'm', promptModel: 'm', tools: [], outputStyle: null, traits: [] }
