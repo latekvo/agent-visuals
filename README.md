@@ -2,9 +2,17 @@
 
 A Claude Code plugin that draws LaTeX math and Mermaid diagrams in replies as images, and asks the model to write them.
 
+![Claude Code drawing a formula and a sequence diagram in a reply](https://raw.githubusercontent.com/latekvo/agent-visuals/media/demo.gif)
+
+| Before | After |
+| --- | --- |
+| ![A reply showing LaTeX and Mermaid source](https://raw.githubusercontent.com/latekvo/agent-visuals/media/before.png) | ![The same reply drawn](https://raw.githubusercontent.com/latekvo/agent-visuals/media/after.png) |
+
 - Display math: `$$` or `\[` blocks on lines of their own.
 - Inline math: `$...$` or `\(...\)` in paragraphs and list items, as one-row images. Formulas too tall for a row, and math in headings, tables and quotes, become Unicode text.
 - Diagrams: ` ```mermaid ` blocks with flowcharts, sequence, class, state, ER and xy charts. Other types, such as pie and gantt, stay code.
+
+<img src="https://raw.githubusercontent.com/latekvo/agent-visuals/media/math.png" width="49%" alt="Inline and display math"> <img src="https://raw.githubusercontent.com/latekvo/agent-visuals/media/diagrams.png" width="49%" alt="A flowchart and an xy chart">
 
 ## Install
 
