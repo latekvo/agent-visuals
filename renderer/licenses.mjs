@@ -11,6 +11,7 @@ const notices = [...dirs].sort().map(dir => {
   const pkg = JSON.parse(fs.readFileSync(`${dir}/package.json`, 'utf8'))
   const file = fs.readdirSync(dir).find(f => /^licen[cs]e/i.test(f))
   const text = file ? fs.readFileSync(`${dir}/${file}`, 'utf8').trim() : `License: ${pkg.license}`
-  return `${pkg.name}@${pkg.version} (${pkg.license})\n\n${text}`
+  const repo = (pkg.repository?.url ?? pkg.repository ?? '').replace(/^git\+/, '')
+  return `${pkg.name}@${pkg.version} (${pkg.license}) ${repo}\n\n${text}`
 })
 fs.writeFileSync('dist/LICENSES.txt', `${notices.join(`\n\n${'-'.repeat(72)}\n\n`)}\n`)

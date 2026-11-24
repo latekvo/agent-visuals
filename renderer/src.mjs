@@ -1,5 +1,5 @@
 // Bundled into dist/ by `npm run build`; the plugin runs dist/render.mjs.
-// stdin: {"maxCols": n, "items": [{"tex": "...", "display": bool}, ...]}
+// stdin: {"maxCols": n, "items": [{"tex": "...", "display": bool} | {"mermaid": "..."}, ...]}
 // stdout: {"cell": {w, h, from}, "results": [{png, cols, rows} | {tooTall: true} | {error}]}
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -10,9 +10,12 @@ import { liteAdaptor } from 'mathjax-full/js/adaptors/liteAdaptor.js';
 import { RegisterHTMLHandler } from 'mathjax-full/js/handlers/html.js';
 import { AllPackages } from 'mathjax-full/js/input/tex/AllPackages.js';
 import { initWasm, Resvg } from '@resvg/resvg-wasm';
+import { mermaidSvg } from './mermaid.mjs';
 
 const { maxCols, items } = JSON.parse(fs.readFileSync(0, 'utf8'));
 const fg = process.env.AGENT_VISUALS_FG || '#ffffff';
+// Diagrams are opaque so label backings hide the lines under them; Ghostty's default background.
+const bg = process.env.AGENT_VISUALS_BG || '#282c34';
 
 // Cell size in pixels from the controlling terminal's TIOCGWINSZ.
 function cellSize() {
@@ -68,7 +71,34 @@ function render({ tex, display }) {
   return { png: Buffer.from(new Resvg(outer).render().asPng()).toString('base64'), cols, rows };
 }
 
+// Static weights: resvg-wasm ignores a variable font's weight axis.
+const FONTS = ['Inter-Regular', 'Inter-Medium', 'Inter-SemiBold', 'Inter-Bold', 'JetBrainsMono-Regular'];
+let fonts;
+// Node labels are 13px; this puts them at about the size of the terminal's text.
+const LABEL_EM = 0.72;
+// What an Image source may hold, decoded.
+const MAX_PNG = 2 * 1024 * 1024;
+
+function renderDiagram(code) {
+  fonts ??= FONTS.map((f) => fs.readFileSync(new URL(`../fonts/${f}.ttf`, import.meta.url)));
+  const svg = mermaidSvg(code, { fg, bg });
+  const [, , w, h] = svg.match(/^<svg\b[^>]*?\sviewBox="([^"]+)"/)[1].trim().split(/[\s,]+/).map(Number);
+  const scale = Math.min((cell.h * LABEL_EM) / 13, (maxCols * cell.w) / w, (255 * cell.h) / h);
+  const cols = Math.max(1, Math.ceil((w * scale) / cell.w));
+  const rows = Math.max(1, Math.ceil((h * scale) / cell.h));
+  const sized = svg.replace(/^<svg\b[^>]*>/, (tag) => tag
+    .replace(/\swidth="[^"]*"/, ` width="${cols * cell.w}"`)
+    .replace(/\sheight="[^"]*"/, ` height="${rows * cell.h}"`));
+  const png = new Resvg(sized, {
+    background: bg,
+    font: { fontBuffers: fonts, defaultFontFamily: 'Inter', sansSerifFamily: 'Inter', monospaceFamily: 'JetBrains Mono' },
+  }).render().asPng();
+  if (png.length > MAX_PNG) return { error: `diagram is ${png.length} bytes as a PNG` };
+  return { png: Buffer.from(png).toString('base64'), cols, rows };
+}
+
 const results = items.map((item) => {
-  try { return render(item); } catch (err) { return { error: String(err?.message ?? err) }; }
+  try { return 'mermaid' in item ? renderDiagram(item.mermaid) : render(item); }
+  catch (err) { return { error: String(err?.message ?? err) }; }
 });
 process.stdout.write(JSON.stringify({ cell, results }));

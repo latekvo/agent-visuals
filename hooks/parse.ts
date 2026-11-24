@@ -1,4 +1,7 @@
-export type Segment = { kind: 'md'; text: string } | { kind: 'math'; tex: string; source: string }
+export type Segment =
+  | { kind: 'md'; text: string }
+  | { kind: 'math'; tex: string; source: string }
+  | { kind: 'diagram'; code: string; source: string }
 
 export type Piece =
   | { kind: 'text'; text: string; bold?: true; italic?: true; code?: true; href?: string }
@@ -15,13 +18,14 @@ const OPENERS = new Map([
 ])
 
 const FENCE = /^\s*(```|~~~)/
+const MERMAID = /^\s*(```|~~~)\s*mermaid\s*$/i
 const LIST_ITEM = /^(\s*(?:[-*+]|\d+[.)]) +)(.*)$/
 // Blocks whose markup the flow layout does not draw: headings, quotes, tables, html, rules.
 const NOT_FLOW = /^\s*(#|>|\||<|(?:[-*_=] *){3,}$)/
 
-// Splits markdown into text and display-math blocks, leaving fenced code alone.
-// A block is a whole line `$$...$$` / `\[...\]`, or a line holding only the
-// opener followed by lines up to one ending in the closer.
+// Splits markdown into text, display-math and closed ```mermaid blocks, leaving
+// other fenced code alone. A math block is a whole line `$$...$$` / `\[...\]`,
+// or a line holding only the opener followed by lines up to one ending in the closer.
 export function splitDisplay(text: string): Segment[] {
   const out: Segment[] = []
   const md: string[] = []
@@ -35,6 +39,14 @@ export function splitDisplay(text: string): Segment[] {
     const line = lines[i]!
     const fenceMark = line.match(FENCE)?.[1]
     if (fenceMark && (fence === null || fence === fenceMark)) {
+      const end = fence === null && MERMAID.test(line) ? closingFence(lines, i, fenceMark) : -1
+      const code = lines.slice(i + 1, end).join('\n')
+      if (end > 0 && code.trim()) {
+        flush()
+        out.push({ kind: 'diagram', code, source: lines.slice(i, end + 1).join('\n') })
+        i = end
+        continue
+      }
       fence = fence === null ? fenceMark : null
       md.push(line)
       continue
@@ -71,6 +83,14 @@ export function splitDisplay(text: string): Segment[] {
   }
   flush()
   return out
+}
+
+function closingFence(lines: string[], open: number, mark: string): number {
+  for (let j = open + 1; j < lines.length; j++) {
+    const t = lines[j]!.trim()
+    if (t.startsWith(mark) && [...t].every(c => c === mark[0])) return j
+  }
+  return -1
 }
 
 const isSpace = (c: string | undefined) => c === undefined || /\s/.test(c)

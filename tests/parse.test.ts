@@ -2,7 +2,8 @@ import { expect, test } from 'claude-code/testing'
 
 import { escapeMarkdown, parseInline, replaceInlineMath, splitBlocks, splitDisplay } from '../hooks/parse'
 
-const display = (t: string) => splitDisplay(t).map(s => (s.kind === 'math' ? `M:${s.tex}` : 'T'))
+const display = (t: string) =>
+  splitDisplay(t).map(s => (s.kind === 'math' ? `M:${s.tex}` : s.kind === 'diagram' ? `D:${s.code}` : 'T'))
 const inline = (t: string) =>
   parseInline(t).map(p => {
     if (p.kind === 'math') return `M:${p.tex}`
@@ -21,6 +22,16 @@ test('display math: fences, stray openers, blank lines and empty blocks stay tex
   expect(display('$$ costs here\nmore text\n$$y$$')).toEqual(['T', 'M:y'])
   expect(display('$$\nx\n\npara\n$$z$$')).toEqual(['T', 'M:z'])
   expect(display('$$$$')).toEqual(['T'])
+})
+
+test('diagrams: closed mermaid fences; unclosed, empty and other fences stay text', async () => {
+  expect(display('a\n```mermaid\ngraph TD\n  A-->B\n```\nb')).toEqual(['T', 'D:graph TD\n  A-->B', 'T'])
+  expect(display('~~~ Mermaid\npie\n~~~~')).toEqual(['D:pie'])
+  expect(display('```mermaid\ngraph TD\nA-->B')).toEqual(['T'])
+  expect(display('```mermaid\n\n```')).toEqual(['T'])
+  expect(display('```js\nx\n```\n```mermaid\npie\n```')).toEqual(['T', 'D:pie'])
+  // A fence with an info string never closes one (CommonMark).
+  expect(display('```mermaid\npie\n```js\n```')).toEqual(['D:pie\n```js'])
 })
 
 test('inline math: $...$ and \\(...\\) between text', async () => {

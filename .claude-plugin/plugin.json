@@ -1,10 +1,22 @@
 {
   "name": "agent-visuals",
-  "version": "0.3.1",
-  "description": "Draws LaTeX math in Claude Code replies as images on kitty-graphics terminals, and asks the model to write formulas as LaTeX",
-  "author": { "name": "latekvo", "url": "https://github.com/latekvo" },
+  "version": "0.4.0",
+  "description": "Draws LaTeX math and Mermaid diagrams in Claude Code replies as images on kitty-graphics terminals, and asks the model to write them",
+  "author": {
+    "name": "latekvo",
+    "url": "https://github.com/latekvo"
+  },
   "homepage": "https://github.com/latekvo/agent-visuals",
   "repository": "https://github.com/latekvo/agent-visuals",
   "license": "MIT",
-  "keywords": ["latex", "math", "mathjax", "kitty-graphics", "ghostty", "terminal"]
+  "keywords": [
+    "latex",
+    "math",
+    "mathjax",
+    "mermaid",
+    "diagrams",
+    "kitty-graphics",
+    "ghostty",
+    "terminal"
+  ]
 }

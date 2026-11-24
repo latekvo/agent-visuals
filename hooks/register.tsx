@@ -4,12 +4,14 @@ import { escapeMarkdown, type FlowItem, type Piece, replaceInlineMath, splitBloc
 import { texToUnicode } from './unicode'
 
 type Rendered = { png: string; cols: number; rows: number } | { tooTall: true } | { error: string }
-type Formula = { tex: string; display: boolean }
+type Item = { tex: string; display: boolean } | { mermaid: string }
 
 const PROMPT = [
-  'This terminal draws LaTeX in your replies as images. Write a formula that stands alone as display math:',
+  'This terminal draws LaTeX and Mermaid in your replies as images. Write a formula that stands alone as display math:',
   '`$$` on its own line, the LaTeX, then `$$` on its own line. Write math inside a sentence as `$...$`.',
   'Prefer LaTeX over ASCII or Unicode approximations of formulas, and keep math meant to render out of code spans.',
+  'Where a diagram explains a flow, sequence, state machine or structure better than prose, write it as a',
+  '```mermaid code block instead of ASCII art.',
 ].join(' ')
 
 // Claude Code's own reply bullet and inline-code color.
@@ -22,18 +24,20 @@ export const register: Register = on => {
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
     if (!e.surfaces.includes('terminal')) return composed
-    return { sections: [...composed.sections, { id: 'agent-visuals:math', text: PROMPT, scope: 'session' }] }
+    return { sections: [...composed.sections, { id: 'agent-visuals', text: PROMPT, scope: 'session' }] }
   })
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (e.surface !== 'terminal' || e.props.isSummary) return next(e)
     const segments = splitDisplay(e.props.text).map(s =>
-      s.kind === 'math' ? s : { ...s, blocks: splitBlocks(s.text) },
+      s.kind === 'md' ? { ...s, blocks: splitBlocks(s.text) } : s,
     )
-    const formulas = segments.flatMap((s): Formula[] =>
+    const items = segments.flatMap((s): Item[] =>
       s.kind === 'math'
         ? [{ tex: s.tex, display: true }]
-        : s.blocks.flatMap(b =>
+        : s.kind === 'diagram'
+          ? [{ mermaid: s.code }]
+          : s.blocks.flatMap(b =>
             b.kind === 'flow'
               ? b.items.flatMap(it => it.pieces.flatMap(p => (p.kind === 'math' ? [{ tex: p.tex, display: false }] : [])))
               : [],
@@ -42,13 +46,13 @@ export const register: Register = on => {
     const hasRawMath = segments.some(
       s => s.kind === 'md' && s.blocks.some(b => b.kind === 'raw' && replaceInlineMath(b.text, () => '') !== b.text),
     )
-    if (!formulas.length && !hasRawMath) return next(e)
+    if (!items.length && !hasRawMath) return next(e)
 
     // Assistant text sits two columns in from the reply bullet.
     const width = Math.max(10, (e.viewport?.columns ?? 80) - 2)
     const maxCols = Math.min(255, width - 2)
-    const key = (f: Formula) => `${f.display ? 'D' : 'I'}${maxCols}\0${f.tex}`
-    const missing = [...new Map(formulas.filter(f => !cache.has(key(f))).map(f => [key(f), f])).values()]
+    const key = (f: Item) => ('mermaid' in f ? `G${maxCols}\0${f.mermaid}` : `${f.display ? 'D' : 'I'}${maxCols}\0${f.tex}`)
+    const missing = [...new Map(items.filter(f => !cache.has(key(f))).map(f => [key(f), f])).values()]
     if (missing.length) {
       // A streaming reply changes the text under a pending render, abandoning
       // this dispatch; the redraw for the newer text renders again.
@@ -66,7 +70,7 @@ export const register: Register = on => {
         results = (JSON.parse(run.stdout) as { results: Rendered[] }).results
       } catch (err) {
         // Failures are cached too, so a broken renderer isn't rerun on every redraw.
-        $.ui.log(`agent-visuals: renderer failed, showing formulas as text: ${String(err)}`)
+        $.ui.log(`agent-visuals: renderer failed, showing source as text: ${String(err)}`)
       }
       missing.forEach((f, i) => cache.set(key(f), results[i] ?? { error: 'not rendered' }))
       // Oldest first: Map iterates in insertion order.
@@ -75,7 +79,7 @@ export const register: Register = on => {
         cache.delete(old)
       }
     }
-    const image = (f: Formula) => {
+    const image = (f: Item) => {
       const r = cache.get(key(f))
       return r && 'png' in r ? r : null
     }
@@ -159,11 +163,20 @@ export const register: Register = on => {
 
     const parts: RenderChildren[] = []
     for (const s of segments) {
-      if (s.kind === 'math') {
-        const img = image({ tex: s.tex, display: true })
+      if (s.kind !== 'md') {
+        const img = image(s.kind === 'math' ? { tex: s.tex, display: true } : { mermaid: s.code })
         parts.push(
           block(
-            img ? <Image source={{ png: img.png }} columns={img.cols} rows={img.rows} alt={s.tex} /> : markdown(s.source),
+            img ? (
+              <Image
+                source={{ png: img.png }}
+                columns={img.cols}
+                rows={img.rows}
+                alt={s.kind === 'math' ? s.tex : s.code}
+              />
+            ) : (
+              markdown(s.source)
+            ),
           ),
         )
         continue
