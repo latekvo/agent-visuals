@@ -1,4 +1,4 @@
-import type { Register, RenderChildren } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import { escapeMarkdown, type FlowItem, type Piece, replaceInlineMath, splitBlocks, splitDisplay } from './parse'
 import { texToUnicode } from './unicode'
@@ -19,50 +19,47 @@ const BULLET = '⏺'
 const CODE_COLOR = '#afd7ff'
 
 const cache = new Map<string, Rendered>()
+// Renders in flight, which a draw awaits instead of starting its own.
+const pending = new Map<string, Promise<void>>()
+// The transcript's width at the last prompt: streaming renders are sized for it.
+let promptColumns: number | undefined
 
-export const register: Register = on => {
-  on('prompt.compose', async ($, e, next) => {
-    const composed = await next(e)
-    if (!e.surfaces.includes('terminal')) return composed
-    return { sections: [...composed.sections, { id: 'agent-visuals', text: PROMPT, scope: 'session' }] }
-  })
+const maxColsFor = (columns: number) => Math.min(255, Math.max(10, columns - 2) - 2)
+const keyFor = (maxCols: number, f: Item) =>
+  'mermaid' in f ? `G${maxCols}\0${f.mermaid}` : `${f.display ? 'D' : 'I'}${maxCols}\0${f.tex}`
 
-  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    if (e.surface !== 'terminal' || e.props.isSummary) return next(e)
-    const segments = splitDisplay(e.props.text).map(s =>
-      s.kind === 'md' ? { ...s, blocks: splitBlocks(s.text) } : s,
-    )
-    const items = segments.flatMap((s): Item[] =>
-      s.kind === 'math'
-        ? [{ tex: s.tex, display: true }]
-        : s.kind === 'diagram'
-          ? [{ mermaid: s.code }]
-          : s.blocks.flatMap(b =>
-            b.kind === 'flow'
-              ? b.items.flatMap(it => it.pieces.flatMap(p => (p.kind === 'math' ? [{ tex: p.tex, display: false }] : [])))
-              : [],
-          ),
-    )
-    const hasRawMath = segments.some(
-      s => s.kind === 'md' && s.blocks.some(b => b.kind === 'raw' && replaceInlineMath(b.text, () => '') !== b.text),
-    )
-    if (!items.length && !hasRawMath) return next(e)
+function parse(text: string) {
+  const segments = splitDisplay(text).map(s =>
+    s.kind === 'md' ? { ...s, blocks: splitBlocks(s.text) } : s,
+  )
+  const items = segments.flatMap((s): Item[] =>
+    s.kind === 'math'
+      ? [{ tex: s.tex, display: true }]
+      : s.kind === 'diagram'
+        ? [{ mermaid: s.code }]
+        : s.blocks.flatMap(b =>
+          b.kind === 'flow'
+            ? b.items.flatMap(it => it.pieces.flatMap(p => (p.kind === 'math' ? [{ tex: p.tex, display: false }] : [])))
+            : [],
+        ),
+  )
+  return { segments, items }
+}
 
-    // Assistant text sits two columns in from the reply bullet.
-    const width = Math.max(10, (e.viewport?.columns ?? 80) - 2)
-    const maxCols = Math.min(255, width - 2)
-    const key = (f: Item) => ('mermaid' in f ? `G${maxCols}\0${f.mermaid}` : `${f.display ? 'D' : 'I'}${maxCols}\0${f.tex}`)
-    const missing = [...new Map(items.filter(f => !cache.has(key(f))).map(f => [key(f), f])).values()]
-    if (missing.length) {
-      // A streaming reply changes the text under a pending render, abandoning
-      // this dispatch; the redraw for the newer text renders again.
+// Starts a render of each item neither cached nor in flight; resolves once every item is cached.
+function ensure($: EngineInterface, maxCols: number, items: Item[]): Promise<unknown> | undefined {
+  const key = (f: Item) => keyFor(maxCols, f)
+  const missing = [
+    ...new Map(items.filter(f => !cache.has(key(f)) && !pending.has(key(f))).map(f => [key(f), f])).values(),
+  ]
+  if (missing.length) {
+    const done = (async () => {
       const run = await $.process
         .run(['node', `${$.plugin.root}/renderer/dist/render.mjs`], {
           stdin: JSON.stringify({ maxCols, items: missing }),
           timeoutMs: 10_000,
         })
         .catch((err: unknown) => String(err))
-      if (next.signal.aborted) return next(e)
       let results: Rendered[] = []
       try {
         if (typeof run === 'string') throw new Error(run)
@@ -78,9 +75,68 @@ export const register: Register = on => {
         if (cache.size <= 200) break
         cache.delete(old)
       }
+    })().finally(() => missing.forEach(f => pending.delete(key(f))))
+    missing.forEach(f => pending.set(key(f), done))
+  }
+  const inFlight = new Set(items.flatMap(f => pending.get(key(f)) ?? []))
+  return inFlight.size ? Promise.all(inFlight) : undefined
+}
+
+export const register: Register = on => {
+  on('prompt.compose', async ($, e, next) => {
+    const composed = await next(e)
+    if (!e.surfaces.includes('terminal')) return composed
+    return { sections: [...composed.sections, { id: 'agent-visuals', text: PROMPT, scope: 'session' }] }
+  })
+
+  on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
+    if (e.surface === 'terminal') promptColumns = e.viewport?.columns
+    return next(e)
+  })
+
+  // Formulas and diagrams render as their blocks close in the streaming text,
+  // so the finished reply draws without waiting on the renderer. One render at
+  // a time, as its startup dominates: blocks closing meanwhile render after it.
+  on('turn.step', async function* ($, e, next) {
+    const texts: string[] = []
+    let closed: Item[] = []
+    let busy = false
+    const renderClosed = (maxCols: number) => {
+      const ready = busy ? undefined : ensure($, maxCols, closed)
+      if (!ready) return
+      busy = true
+      void ready.finally(() => {
+        busy = false
+        renderClosed(maxCols)
+      })
+    }
+    for await (const chunk of next(e)) {
+      yield chunk
+      if (chunk.kind !== 'text' || e.agentId !== undefined || promptColumns === undefined) continue
+      texts[chunk.index] = (texts[chunk.index] ?? '') + chunk.text
+      closed = parse(texts[chunk.index]!).items
+      renderClosed(maxColsFor(promptColumns))
+    }
+  })
+
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || e.props.isSummary) return next(e)
+    const { segments, items } = parse(e.props.text)
+    const hasRawMath = segments.some(
+      s => s.kind === 'md' && s.blocks.some(b => b.kind === 'raw' && replaceInlineMath(b.text, () => '') !== b.text),
+    )
+    if (!items.length && !hasRawMath) return next(e)
+
+    // Assistant text sits two columns in from the reply bullet.
+    const width = Math.max(10, (e.viewport?.columns ?? 80) - 2)
+    const maxCols = maxColsFor(e.viewport?.columns ?? 80)
+    const ready = ensure($, maxCols, items)
+    if (ready) {
+      await ready
+      if (next.signal.aborted) return next(e)
     }
     const image = (f: Item) => {
-      const r = cache.get(key(f))
+      const r = cache.get(keyFor(maxCols, f))
       return r && 'png' in r ? r : null
     }
 
