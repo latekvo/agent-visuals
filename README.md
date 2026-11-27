@@ -28,7 +28,7 @@ Needs `node` and a terminal with the kitty graphics protocol (Ghostty, kitty). I
 
 ## Development
 
-`claude --plugin-dir .` runs a session with this checkout loaded; `claude plugin test .` runs the tests.
+`claude --plugin-dir .` runs a session with this checkout loaded; `claude plugin test .` runs the hooks' tests, and `cd renderer && npm test` the renderer's.
 
 `renderer/dist/` is built from `renderer/src.mjs` and committed, so installs need no build step: `cd renderer && npm ci && npm run build`.
 

@@ -86,10 +86,32 @@ function resolveCss(s, vars, depth = 0) {
   return out + s.slice(i);
 }
 
+// resvg draws orient="auto-start-reverse" unrotated. On a marker-end it means auto; on a
+// marker-start, auto on a copy turned 180° about its center.
+function orientMarkers(svg) {
+  const reversed = new Set();
+  return svg
+    // beautiful-mermaid 1.1.3 reverses its start arrowhead twice and anchors its diamonds by the
+    // wrong tip, hiding both inside the node.
+    .replace(/(<marker id="arrowhead-start[^"]*"[^>]*orient=")auto-start-reverse"/g, '$1auto"')
+    .replace(/(<marker id="cls-(?:composition|aggregation)"[^>]*refX=")0"/g, '$112"')
+    .replace(/<marker\b([^>]*)\sorient="auto-start-reverse"([^>]*)>([\s\S]*?)<\/marker>/g, (_, pre, post, body) => {
+      const attrs = pre + post;
+      const [id, w, h, x, y] = ['id', 'markerWidth', 'markerHeight', 'refX', 'refY']
+        .map((n) => attrs.match(new RegExp(`\\s${n}="([^"]*)"`))[1]);
+      reversed.add(id);
+      const rest = attrs.replace(/\s(?:id|refX|refY)="[^"]*"/g, '');
+      return `<marker${attrs} orient="auto">${body}</marker>`
+        + `<marker id="${id}-reversed"${rest} refX="${w - x}" refY="${h - y}" orient="auto">`
+        + `<g transform="rotate(180 ${w / 2} ${h / 2})">${body}</g></marker>`;
+    })
+    .replace(/(\smarker-start="url\(#)([^)]+)\)"/g, (m, a, id) => (reversed.has(id) ? `${a}${id}-reversed)"` : m));
+}
+
 const DECL = /(--[\w-]+)\s*:\s*([^;"}]+?)\s*(?=;|"|}|$)/g;
 
 export function mermaidSvg(code, { fg, bg }) {
-  const svg = renderMermaidSVG(code, { fg, bg, transparent: true });
+  const svg = orientMarkers(renderMermaidSVG(code, { fg, bg, transparent: true }));
   const vars = new Map();
   const rootStyle = svg.match(/^<svg\b[^>]*?\sstyle="([^"]*)"/)?.[1] ?? '';
   const styles = [...svg.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1]);

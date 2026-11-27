@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "node --test",
     "build": "esbuild src.mjs --bundle --platform=node --format=esm --minify --legal-comments=none --metafile=node_modules/.meta.json --outfile=dist/render.mjs && cp node_modules/@resvg/resvg-wasm/index_bg.wasm dist/resvg.wasm && node licenses.mjs node_modules/.meta.json"
   },
   "devDependencies": {
