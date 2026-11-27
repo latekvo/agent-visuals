@@ -1,6 +1,6 @@
 {
   "name": "agent-visuals",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Draws LaTeX math and Mermaid diagrams in Claude Code replies as images on kitty-graphics terminals, and asks the model to write them",
   "author": {
     "name": "latekvo",
